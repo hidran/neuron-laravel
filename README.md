@@ -15,7 +15,7 @@ develop your agentic system or create custom plugins and extensions.
 - A ready-to-use configuration file for AI providers, embeddings providers credentials
 - A few artisan commands to create the most used components and reduce boilerplate code
 - Facades to automatically instantiate providers and vector stores
-- Ready-to-run migrations if you want to use the EloquentChatHistory component
+- Ready-to-run migrations if you want to use the EloquentMessageStore component
 - AI coding assistant guidelines integrated with Laravel Boost to help AI write better code
 
 ## What is Neuron?
@@ -98,16 +98,35 @@ $person = Neuron::structured(new UserMessage('I am John and I like pizza!'), Per
 The stream also yields other chunk types (tool calls, reasoning), so filter for the
 ones you print.
 
-NeuronAI 4 addresses every agent by a thread ID. The facade generates one for each
-call, so every call is a new, anonymous conversation and nothing is remembered
-between calls.
+### Conversations
+
+NeuronAI 4 addresses every agent by a thread ID. Unless you bind one, each facade
+call is a new, anonymous conversation with a generated ID, so nothing is remembered
+between calls. To continue a conversation, bind its thread with `for()` and give it
+a durable message store. The package ships the `chat_messages` migration and the
+`ChatMessage` model that `EloquentMessageStore` needs:
+
+```php
+use NeuronAI\Chat\History\EloquentMessageStore;
+use NeuronAI\Chat\Messages\UserMessage;
+use NeuronAI\Laravel\Facades\Neuron;
+use NeuronAI\Laravel\Models\ChatMessage;
+
+$response = Neuron::for("user-{$user->id}")
+    ->messageStore(new EloquentMessageStore(ChatMessage::class))
+    ->chat(new UserMessage('What did I ask you yesterday?'))
+    ->getMessage();
+```
+
+Choose the thread ID on the server (a user, a conversation or a ticket key), never
+from unchecked request input, or one user could read another user's conversation.
 
 ### Customizing a call
 
 The facade resolves a **singleton**, so configuration methods never mutate the
 shared instance — they return a fresh, independent copy you chain into the call.
 This means every `Neuron::chat(...)` starts from the clean, configured default
-unless you explicitly attach tools or middleware.
+unless you explicitly attach tools, middleware, a thread or a message store.
 
 Attach **tools** or toolkits before a call. Pass a single instance or an array:
 
@@ -171,7 +190,7 @@ $response = Neuron::tools(new SearchTool())
 Neuron::chat(new UserMessage('Hello!'));
 ```
 
-For custom memory, multiple middleware, or more advanced agent behaviour, create
+For custom memory hooks, multiple middleware, or more advanced agent behaviour, create
 a dedicated agent class using `php artisan neuron:agent`.
 
 <a name="agent"></a>
@@ -316,7 +335,7 @@ https://docs.neuron-ai.dev/rag/rag
 
 <a name="migrations"></a>
 
-## EloquentChatHistory
+## EloquentMessageStore
 
 Neuron provides you with a built-in system to manage the memory of a chat session you perform with the agent.
 In many Q&A applications you can have a back-and-forth conversation with the LLM, meaning the application needs some sort 
@@ -324,7 +343,7 @@ of "memory" of past questions and answers, and some logic for incorporating thos
 
 Here is the documentation: **https://docs.neuron-ai.dev/agent/chat-history-and-memory**
 
-The package ships with a ready-to-use migration for the `ElquentChatHistory` component. Here is the command to copy the migration
+The package ships with ready-to-use migrations for the `EloquentMessageStore` component. Here is the command to copy the migrations
 in your project `database/migrations/neuron` folder:
 
 ```
@@ -337,32 +356,39 @@ And then run the migrations:
 php artisan migrate --path=/database/migrations/neuron
 ```
 
+> **Upgrading:** NeuronAI 4 identifies each stored message by `thread_id` and `message_id`. If you published the
+> migrations before, run the two commands above again: `vendor:publish` copies only the migrations you do not have yet
+> (`add_message_id_to_chat_messages_table`) and leaves your existing files untouched. Messages stored before the upgrade
+> keep an empty `message_id` and are still loaded.
+
 This package also provides the ChatMessage model you can use to store the messages in the database.
 
 ```php
 namespace App\Neuron;
 
 use NeuronAI\Agent\Agent;
-use NeuronAI\Chat\History\ChatHistoryInterface;
-use NeuronAI\Chat\History\EloquentChatHistory;
+use NeuronAI\Chat\History\EloquentMessageStore;
+use NeuronAI\Chat\History\MessageStoreInterface;
 use NeuronAI\Laravel\Models\ChatMessage;
 
 class MyAgent extends Agent
 {
     ...
     
-    protected function chatHistory(): ChatHistoryInterface
+    protected function messageStore(): MessageStoreInterface
     {
-        return new EloquentChatHistory(
-            ChatMessage::class,
-            threadId: 'THREAD_ID',
-            contextWindow: 100000
-        );
+        return new EloquentMessageStore(ChatMessage::class);
     }
 }
 ```
 
-Read more about **Eloquent Chat History** in the [Neuron AI documentation](https://docs.neuron-ai.dev/agent/chat-history-and-memory#eloquentchathisotry).
+The store does not hold the thread: bind it on the agent before running it.
+
+```php
+$state = MyAgent::make()->setThreadId('THREAD_ID')->chat(new UserMessage('Hi!'));
+```
+
+Read more about **EloquentMessageStore** in the [Neuron AI documentation](https://docs.neuron-ai.dev/agent/chat-history-and-memory#eloquentmessagestore).
 
 <a name="monitoring">
 

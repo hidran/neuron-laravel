@@ -6,7 +6,9 @@ namespace NeuronAI\Laravel\Tests;
 
 use NeuronAI\Agent\Agent;
 use NeuronAI\Agent\AgentState;
+use NeuronAI\Chat\History\InMemoryMessageStore;
 use NeuronAI\Chat\Messages\AssistantMessage;
+use NeuronAI\Chat\Messages\Message;
 use NeuronAI\Chat\Messages\Stream\Chunks\TextChunk;
 use NeuronAI\Chat\Messages\UserMessage;
 use NeuronAI\Laravel\Facades\Neuron as NeuronFacade;
@@ -14,6 +16,8 @@ use NeuronAI\Laravel\Neuron;
 use NeuronAI\StructuredOutput\SchemaProperty;
 use NeuronAI\Testing\FakeAIProvider;
 use ReflectionClass;
+
+use function array_map;
 
 /**
  * Structured output target used only by these tests.
@@ -82,6 +86,53 @@ class NeuronThreadTest extends BasicTestCase
         $this->assertNotNull($first);
         $this->assertStringStartsWith('thread_', $first);
         $this->assertNotSame($first, $second);
+    }
+
+    public function test_for_returns_a_bound_clone_and_leaves_the_original_untouched(): void
+    {
+        $neuron = new Neuron(new FakeAIProvider());
+
+        $bound = $neuron->for('conversation-42');
+
+        $this->assertNotSame($neuron, $bound);
+        $this->assertSame('conversation-42', $this->makeAgent($bound)->getThreadId());
+        $this->assertNotSame('conversation-42', $this->makeAgent($neuron)->getThreadId());
+    }
+
+    public function test_a_bound_thread_with_a_shared_store_continues_the_conversation(): void
+    {
+        $provider = new FakeAIProvider(
+            new AssistantMessage('Nice to meet you, Valerio'),
+            new AssistantMessage('Your name is Valerio'),
+        );
+        $neuron = (new Neuron($provider))
+            ->for('conversation-42')
+            ->messageStore(new InMemoryMessageStore());
+
+        $neuron->chat(new UserMessage('My name is Valerio'));
+        $neuron->chat(new UserMessage('What is my name?'));
+
+        $secondRequest = $provider->getRecorded()[1]->messages;
+        $this->assertSame(
+            ['My name is Valerio', 'Nice to meet you, Valerio', 'What is my name?'],
+            array_map(fn (Message $m): mixed => $m->getContent(), $secondRequest),
+        );
+    }
+
+    public function test_message_store_returns_a_clone_and_leaves_the_original_untouched(): void
+    {
+        $provider = new FakeAIProvider(new AssistantMessage('one'), new AssistantMessage('two'));
+        $store = new InMemoryMessageStore();
+        $neuron = (new Neuron($provider))->for('conversation-42');
+
+        $neuron->messageStore($store)->chat(new UserMessage('stored'));
+        $neuron->chat(new UserMessage('not stored'));
+
+        // The original had no store: its call started from an empty history.
+        $this->assertSame(
+            ['not stored'],
+            array_map(fn (Message $m): mixed => $m->getContent(), $provider->getRecorded()[1]->messages),
+        );
     }
 
     public function test_the_facade_chat_works_on_the_container_singleton(): void
